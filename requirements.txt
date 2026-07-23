@@ -1,3 +1,4 @@
 # For pip/venv installs (no uv required): pip install -r requirements.txt
-fastmcp>=2.0
-garminconnect>=0.3.6
+# Upper bounds keep pip installs on the same major versions this repo is tested against.
+fastmcp>=3.4,<4
+garminconnect>=0.3.6,<0.4

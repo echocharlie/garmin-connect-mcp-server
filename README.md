@@ -14,7 +14,7 @@ which is gated to approved businesses. This server instead uses the well-establi
 unofficial [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) Python
 library, which signs in with your own Garmin account using the same OAuth flow as the
 official Garmin Connect mobile app. No developer program membership, no API keys — you
-log in once and tokens auto-refresh for about a year.
+log in once and the long-lived tokens refresh themselves on use.
 
 Unlike most Garmin MCP servers (which expose 60–110 thin endpoint wrappers), this one
 follows [Anthropic's tool-design guidance](https://www.anthropic.com/engineering/writing-tools-for-agents):
@@ -52,11 +52,18 @@ With [uv](https://docs.astral.sh/uv/) (recommended):
 uv sync
 ```
 
-Without uv (plain venv + pip):
+Without uv (plain venv + pip) — macOS/Linux:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
+```
+
+Windows (PowerShell):
+
+```powershell
+py -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
 ```
 
 Both paths create the environment in `.venv/`, so the Claude Desktop config below is
@@ -69,14 +76,26 @@ uv run python login.py            # or: .venv/bin/python login.py
 ```
 
 Enter your Garmin email and password (plus MFA code if enabled). OAuth tokens are saved
-to `~/.garminconnect` (override with the `GARMINTOKENS` env var) and auto-refresh for
-roughly a year. **Your password is never stored** — only the tokens are. Re-run the same
-command whenever tokens expire.
+to `~/.garminconnect` and refresh themselves on use. **Your password is never stored** —
+only the tokens are. Re-run the same command whenever tokens expire, or with `--force`
+to switch to a different Garmin account.
+
+To store tokens somewhere else, set the `GARMINTOKENS` env var — but note it must then
+be set in **both** places: in your shell when running `login.py`, and in the Claude
+Desktop config's `env` block (GUI apps don't inherit your shell environment):
+
+```json
+"garmin": {
+  "command": "...",
+  "args": ["..."],
+  "env": { "GARMINTOKENS": "/path/to/tokens" }
+}
+```
 
 ## Test locally (optional)
 
 ```bash
-uv run fastmcp dev server.py      # or: .venv/bin/fastmcp dev server.py
+uv run fastmcp dev inspector server.py      # or: .venv/bin/fastmcp dev inspector server.py
 ```
 
 This opens the MCP Inspector in your browser to exercise each tool by hand.
@@ -115,8 +134,10 @@ reopen Claude Desktop** (it reads the config only on launch), then try:
 - **`429` / rate limited during login** — Garmin rate-limits its SSO endpoint by IP.
   Don't retry in a loop; wait 30–60 minutes or switch networks (a phone hotspot changes
   your IP) and run `login.py` again.
-- **"No valid Garmin Connect tokens found"** — run `python login.py` again; tokens
-  expire after ~a year or if you change your Garmin password.
+- **Authentication failed / token errors** — re-run the login script
+  (`uv run python login.py` or `.venv/bin/python login.py`); tokens die if you change
+  your Garmin password or Garmin revokes them. The running server picks up fresh
+  tokens on the next tool call — no restart needed.
 - **Tools return empty tables / all `-`** — the account has no synced data for that
   range. Health metrics (sleep, HRV, Body Battery, training status) require a Garmin
   watch; activities can come from any source that syncs to Garmin Connect (trainer,
@@ -155,7 +176,7 @@ or endorsed by Garmin.
 
 ```bash
 uv run python -m compileall server.py login.py   # syntax check
-uv run fastmcp dev server.py                     # manual tool testing
+uv run fastmcp dev inspector server.py           # manual tool testing
 ```
 
 Tool design notes: tools are namespaced `garmin_*` to compose cleanly with sibling

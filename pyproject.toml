@@ -1,13 +1,13 @@
 [project]
 name = "garmin-connect-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read-only MCP server for Garmin Connect health, training, and activity data"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
-    "fastmcp>=2.0",
-    "garminconnect>=0.3.6",
+    "fastmcp>=3.4,<4",
+    "garminconnect>=0.3.6,<0.4",
 ]
 
 [project.scripts]
