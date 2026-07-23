@@ -157,3 +157,7 @@ uv run fastmcp dev server.py                     # manual tool testing
 Tool design notes: tools are namespaced `garmin_*` to compose cleanly with sibling
 health MCP servers (Oura, Strava, …); outputs are compact markdown tables (roughly
 40 tokens/day-row); date ranges are capped per call with actionable error messages.
+
+## License
+
+[MIT](LICENSE)
