@@ -117,19 +117,32 @@ def _days(start: date, end: date):
 
 
 def _hm(seconds) -> str:
-    """Seconds -> 'H:MM' string, or '-' if missing."""
-    if not seconds:
+    """Seconds -> 'H:MM' string, or '-' if missing. 0 is a real value (0:00)."""
+    if seconds is None:
         return "-"
     seconds = int(seconds)
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}"
 
 
 def _hms(seconds) -> str:
-    """Seconds -> 'H:MM:SS' string, or '-' if missing."""
-    if not seconds:
+    """Seconds -> 'H:MM:SS' string, or '-' if missing. 0 is a real value (0:00:00)."""
+    if seconds is None:
         return "-"
     seconds = int(seconds)
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+
+
+def _cell(x) -> str:
+    """Sanitize free-text (e.g. activity names) for markdown table cells and headings."""
+    return str(x).replace("|", "\\|").replace("\n", " ").replace("\r", " ") if x is not None else "-"
+
+
+def _first(*vals):
+    """First value that is not None (0 is a real value)."""
+    for v in vals:
+        if v is not None:
+            return v
+    return None
 
 
 def _v(x, fmt: str = "{}") -> str:
@@ -195,13 +208,19 @@ def garmin_get_daily_summary(
             failed.append(ds)
             s = {}
         hrv = (hrv_raw or {}).get("hrvSummary") or {}
-        moderate = s.get("moderateIntensityMinutes") or 0
-        vigorous = s.get("vigorousIntensityMinutes") or 0
+        moderate = s.get("moderateIntensityMinutes")
+        vigorous = s.get("vigorousIntensityMinutes")
+        # Only compute when Garmin reported at least one component; otherwise a failed
+        # or empty day would fabricate a plausible-looking 0.
+        intensity = (moderate or 0) + 2 * (vigorous or 0) if (moderate is not None or vigorous is not None) else None
+        stress = s.get("averageStressLevel")
+        if stress is not None and stress < 0:
+            stress = None  # Garmin uses -1/-2 as "insufficient data" sentinels
         rows.append(
             f"{ds} | {_v(s.get('totalSteps'))} | {_v(s.get('restingHeartRate'))} | "
             f"{_v(hrv.get('lastNightAvg'))} | {_v(hrv.get('status'))} | "
             f"{_v(s.get('bodyBatteryHighestValue'))} | {_v(s.get('bodyBatteryLowestValue'))} | "
-            f"{_v(s.get('averageStressLevel'))} | {moderate + 2 * vigorous} | "
+            f"{_v(stress)} | {_v(intensity)} | "
             f"{_n(s.get('activeKilocalories'))}"
         )
     if failed:
@@ -243,12 +262,23 @@ def garmin_get_sleep(
             data = {}
         dto = data.get("dailySleepDTO") or {}
         scores = (dto.get("sleepScores") or {}).get("overall") or {}
+        # Garmin has shipped these under multiple names and nesting levels
+        # (dailySleepDTO.avgOvernightHrv vs avgSleepHRV vs top-level siblings).
+        overnight_hrv = _first(
+            dto.get("avgOvernightHrv"), dto.get("avgSleepHRV"),
+            data.get("avgOvernightHrv"), data.get("avgSleepHRV"),
+        )
+        spo2 = _first(
+            dto.get("averageSpO2Value"), dto.get("avgSpO2"),
+            data.get("averageSpO2Value"), data.get("avgSpO2"), data.get("averageSpO2"),
+        )
+        resting_hr = _first(dto.get("restingHeartRate"), data.get("restingHeartRate"))
         rows.append(
             f"{ds} | {_v(scores.get('value'))} | {_v(scores.get('qualifierKey'))} | "
             f"{_hm(dto.get('sleepTimeSeconds'))} | {_hm(dto.get('deepSleepSeconds'))} | "
             f"{_hm(dto.get('lightSleepSeconds'))} | {_hm(dto.get('remSleepSeconds'))} | "
-            f"{_hm(dto.get('awakeSleepSeconds'))} | {_v(dto.get('avgOvernightHrv'))} | "
-            f"{_v(dto.get('averageSpO2Value'))} | {_v(dto.get('restingHeartRate'))}"
+            f"{_hm(dto.get('awakeSleepSeconds'))} | {_v(overnight_hrv)} | "
+            f"{_v(spo2)} | {_v(resting_hr)}"
         )
     if failed:
         rows.append(
@@ -267,10 +297,11 @@ def garmin_list_activities(
         str | None, Field(description="ISO end date (inclusive). Default: today.")
     ] = None,
     activity_type: Annotated[
-        str | None,
+        Literal["cycling", "running", "swimming", "multi_sport", "fitness_equipment", "hiking", "walking", "other"] | None,
         Field(
-            description="Garmin type key filter, e.g. 'running', 'cycling', 'swimming', "
-            "'strength_training', 'walking'. Omit for all types."
+            description="Filter by Garmin PARENT category only — subtypes are rejected by the API. "
+            "Subtypes roll up: virtual_ride/mountain_biking -> 'cycling'; treadmill/trail running -> "
+            "'running'; strength training/indoor cardio -> 'fitness_equipment'. Omit for all types."
         ),
     ] = None,
     limit: Annotated[int, Field(ge=1, le=100, description="Max activities to return (newest first).")] = 20,
@@ -297,7 +328,7 @@ def garmin_list_activities(
         pace = _pace_or_speed(type_key, a.get("averageSpeed"))
         rows.append(
             f"{a.get('activityId', '-')} | {str(a.get('startTimeLocal', '-'))[:10]} | {type_key} | "
-            f"{a.get('activityName', '-')} | {f'{dist / 1000:.2f}' if dist else '-'} | "
+            f"{_cell(a.get('activityName'))} | {f'{dist / 1000:.2f}' if dist else '-'} | "
             f"{_hm(a.get('duration'))} | {_n(a.get('averageHR'))} | {_n(a.get('maxHR'))} | {pace} | "
             f"{_v(a.get('elevationGain'), '{:.0f}')} | {_v(a.get('aerobicTrainingEffect'), '{:.1f}')} | "
             f"{_v(a.get('anaerobicTrainingEffect'), '{:.1f}')}"
@@ -328,7 +359,7 @@ def garmin_get_activity_detail(
     type_key = ((a.get("activityTypeDTO") or {}).get("typeKey")) or "-"
     dist = s.get("distance")
     lines = [
-        f"# {a.get('activityName', 'Activity')} ({type_key}) — id {activity_id}",
+        f"# {_cell(a.get('activityName') or 'Activity')} ({type_key}) — id {activity_id}",
         f"start: {s.get('startTimeLocal', '-')}",
         f"distance_km: {f'{dist / 1000:.2f}' if dist else '-'} | duration: {_hms(s.get('duration'))} | moving: {_hms(s.get('movingDuration'))}",
         f"avg_hr: {_n(s.get('averageHR'))} | max_hr: {_n(s.get('maxHR'))} | calories: {_n(s.get('calories'))}",
@@ -447,8 +478,13 @@ def garmin_get_body_composition(
     for e in entries:
         weight = e.get("weight")
         muscle = e.get("muscleMass")
+        when = e.get("calendarDate")
+        if not when:
+            # Fallback 'date' field is epoch milliseconds, not a date string.
+            ts = e.get("date")
+            when = date.fromtimestamp(ts / 1000).isoformat() if isinstance(ts, (int, float)) else "-"
         rows.append(
-            f"{e.get('calendarDate', str(e.get('date', '-'))[:10])} | "
+            f"{when} | "
             f"{f'{weight / 1000:.1f}' if weight else '-'} | {_v(e.get('bodyFat'), '{:.1f}')} | "
             f"{f'{muscle / 1000:.1f}' if muscle else '-'} | {_v(e.get('bodyWater'), '{:.1f}')} | "
             f"{_v(e.get('bmi'), '{:.1f}')}"
