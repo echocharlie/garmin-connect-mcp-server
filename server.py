@@ -7,41 +7,82 @@ The server only reads that token store; it never sees your password.
 from __future__ import annotations
 
 import os
+import threading
 from datetime import date, timedelta
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectTooManyRequestsError,
+)
 from pydantic import Field
 
 mcp = FastMCP("garmin-connect")
 
 TOKEN_DIR = os.path.expanduser(os.environ.get("GARMINTOKENS", "~/.garminconnect"))
 LOGIN_HINT = (
-    "No valid Garmin Connect tokens found. Ask the user to run `python login.py` in the "
-    "garmin-connect-mcp-server directory to sign in (handles MFA), then retry."
+    "Garmin Connect authentication failed (missing/expired tokens). Ask the user to run "
+    "the login script in the garmin-connect-mcp-server directory — `uv run python login.py` "
+    "or `.venv/bin/python login.py` — then simply retry this tool; no restart is needed."
+)
+RATE_LIMIT_HINT = (
+    "Garmin is rate limiting requests from this IP. Wait 30-60 minutes and retry. "
+    "Do NOT re-run login.py — fresh login attempts extend the block."
 )
 
 _garmin = None
+_garmin_lock = threading.Lock()
+
+_RAISE = object()
 
 
-def _client():
+def _client() -> Garmin:
     """Return a logged-in Garmin client, reusing tokens from the token store."""
     global _garmin
-    if _garmin is not None:
+    with _garmin_lock:
+        if _garmin is None:
+            client = Garmin()
+            try:
+                client.login(TOKEN_DIR)
+            except GarminConnectTooManyRequestsError as e:
+                raise RuntimeError(RATE_LIMIT_HINT) from e
+            except Exception as e:
+                raise RuntimeError(f"{LOGIN_HINT} (underlying error: {type(e).__name__}: {e})") from e
+            _garmin = client
         return _garmin
+
+
+def _drop_client() -> None:
+    """Forget the cached client so the next call re-reads the token store."""
+    global _garmin
+    with _garmin_lock:
+        _garmin = None
+
+
+def _api(method: str, *args, default=_RAISE):
+    """Call a Garmin client method with auth-aware error translation.
+
+    Auth errors drop the cached client (so a re-run of login.py takes effect without a
+    restart) and always raise, as do rate limits. Other errors raise a labeled
+    RuntimeError, or return `default` when one is given (for tolerant per-item fetches).
+    """
+    g = _client()
     try:
-        from garminconnect import Garmin
-    except ImportError as e:
-        raise RuntimeError(
-            "The 'garminconnect' package is not installed. Run `uv sync` (or `pip install garminconnect`)."
-        ) from e
-    try:
-        client = Garmin()
-        client.login(TOKEN_DIR)
+        return getattr(g, method)(*args)
+    except GarminConnectAuthenticationError as e:
+        _drop_client()
+        raise RuntimeError(f"{method} failed: {LOGIN_HINT}") from e
+    except GarminConnectTooManyRequestsError as e:
+        raise RuntimeError(f"{method} aborted: {RATE_LIMIT_HINT}") from e
     except Exception as e:
-        raise RuntimeError(f"{LOGIN_HINT} (underlying error: {type(e).__name__}: {e})") from e
-    _garmin = client
-    return _garmin
+        if default is not _RAISE:
+            return default
+        raise RuntimeError(
+            f"{method} failed: {type(e).__name__}: {e}. This is not an authentication "
+            "problem — do not re-run login.py; retry later or narrow the request."
+        ) from e
 
 
 def _parse_range(
@@ -141,21 +182,19 @@ def garmin_get_daily_summary(
     For sleep detail use garmin_get_sleep; for workouts use garmin_list_activities.
     """
     start, end = _parse_range(start_date, end_date, default_days=7, max_days=31)
-    g = _client()
     rows = [
         "date | steps | resting_hr | hrv_avg | hrv_status | bb_high | bb_low | stress_avg | intensity_min | active_kcal",
         "---|---|---|---|---|---|---|---|---|---",
     ]
+    failed: list[str] = []
     for d in _days(start, end):
         ds = d.isoformat()
-        try:
-            s = g.get_user_summary(ds) or {}
-        except Exception:
+        s = _api("get_user_summary", ds, default=None)
+        hrv_raw = _api("get_hrv_data", ds, default=None)
+        if s is None:
+            failed.append(ds)
             s = {}
-        try:
-            hrv = (g.get_hrv_data(ds) or {}).get("hrvSummary") or {}
-        except Exception:
-            hrv = {}
+        hrv = (hrv_raw or {}).get("hrvSummary") or {}
         moderate = s.get("moderateIntensityMinutes") or 0
         vigorous = s.get("vigorousIntensityMinutes") or 0
         rows.append(
@@ -164,6 +203,11 @@ def garmin_get_daily_summary(
             f"{_v(s.get('bodyBatteryHighestValue'))} | {_v(s.get('bodyBatteryLowestValue'))} | "
             f"{_v(s.get('averageStressLevel'))} | {moderate + 2 * vigorous} | "
             f"{_n(s.get('activeKilocalories'))}"
+        )
+    if failed:
+        rows.append(
+            f"\nNote: fetch failed (non-auth error) for {len(failed)} day(s): {', '.join(failed)} — "
+            "their '-' cells mean 'fetch failed', not 'no data'."
         )
     return "\n".join(rows)
 
@@ -186,16 +230,16 @@ def garmin_get_sleep(
     may differ slightly; say which source you're citing.
     """
     start, end = _parse_range(start_date, end_date, default_days=7, max_days=31)
-    g = _client()
     rows = [
         "date | score | quality | duration | deep | light | rem | awake | overnight_hrv | spo2_avg | resting_hr",
         "---|---|---|---|---|---|---|---|---|---|---",
     ]
+    failed: list[str] = []
     for d in _days(start, end):
         ds = d.isoformat()
-        try:
-            data = g.get_sleep_data(ds) or {}
-        except Exception:
+        data = _api("get_sleep_data", ds, default=None)
+        if data is None:
+            failed.append(ds)
             data = {}
         dto = data.get("dailySleepDTO") or {}
         scores = (dto.get("sleepScores") or {}).get("overall") or {}
@@ -205,6 +249,11 @@ def garmin_get_sleep(
             f"{_hm(dto.get('lightSleepSeconds'))} | {_hm(dto.get('remSleepSeconds'))} | "
             f"{_hm(dto.get('awakeSleepSeconds'))} | {_v(dto.get('avgOvernightHrv'))} | "
             f"{_v(dto.get('averageSpO2Value'))} | {_v(dto.get('restingHeartRate'))}"
+        )
+    if failed:
+        rows.append(
+            f"\nNote: fetch failed (non-auth error) for {len(failed)} night(s): {', '.join(failed)} — "
+            "their '-' cells mean 'fetch failed', not 'no data'."
         )
     return "\n".join(rows)
 
@@ -233,11 +282,7 @@ def garmin_list_activities(
     effect 0-5), anaerobic_te.
     """
     start, end = _parse_range(start_date, end_date, default_days=30, max_days=90)
-    g = _client()
-    try:
-        acts = g.get_activities_by_date(start.isoformat(), end.isoformat(), activity_type) or []
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch activities: {type(e).__name__}: {e}. {LOGIN_HINT}") from e
+    acts = _api("get_activities_by_date", start.isoformat(), end.isoformat(), activity_type) or []
     if not acts:
         return f"No activities between {start} and {end}" + (f" of type '{activity_type}'." if activity_type else ".")
     total = len(acts)
@@ -274,14 +319,11 @@ def garmin_get_activity_detail(
     elevation, calories, training effect — plus lap splits and heart-rate-zone breakdown
     in 'detailed' mode. Get activity_id from garmin_list_activities first.
     """
-    g = _client()
-    try:
-        a = g.get_activity(activity_id) or {}
-    except Exception as e:
+    a = _api("get_activity", activity_id) or {}
+    if not a:
         raise RuntimeError(
-            f"Could not fetch activity {activity_id}: {type(e).__name__}: {e}. "
-            "Check the ID via garmin_list_activities."
-        ) from e
+            f"Activity {activity_id} returned no data. Check the ID via garmin_list_activities."
+        )
     s = a.get("summaryDTO") or {}
     type_key = ((a.get("activityTypeDTO") or {}).get("typeKey")) or "-"
     dist = s.get("distance")
@@ -298,18 +340,12 @@ def garmin_get_activity_detail(
         f"training_load: {_v(s.get('activityTrainingLoad'), '{:.0f}')}",
     ]
     if response_format == "detailed":
-        try:
-            zones = g.get_activity_hr_in_timezones(activity_id) or []
-        except Exception:
-            zones = []
+        zones = _api("get_activity_hr_in_timezones", activity_id, default=[]) or []
         if any(z.get("secsInZone") for z in zones):
             lines += ["", "## Time in HR zones", "zone | time | low_bpm", "---|---|---"]
             for z in zones:
                 lines.append(f"Z{z.get('zoneNumber', '?')} | {_hm(z.get('secsInZone'))} | {_v(z.get('zoneLowBoundary'))}")
-        try:
-            splits = (g.get_activity_splits(activity_id) or {}).get("lapDTOs") or []
-        except Exception:
-            splits = []
+        splits = (_api("get_activity_splits", activity_id, default={}) or {}).get("lapDTOs") or []
         if splits:
             lines += ["", "## Splits (laps)", "lap | distance_km | duration | avg_hr | pace_or_speed | elev_gain_m", "---|---|---|---|---|---"]
             for i, lap in enumerate(splits, 1):
@@ -329,65 +365,52 @@ def garmin_get_training_status() -> str:
     race time predictions (5K/10K/half/marathon). Use this for 'how is my training going /
     how recovered am I' questions; combine with oura_* readiness for cross-source checks.
     """
-    g = _client()
     today = date.today().isoformat()
     lines = [f"# Garmin training snapshot — {today}"]
 
-    try:
-        tr = g.get_training_readiness(today)
-        tr = (tr[0] if isinstance(tr, list) and tr else tr) or {}
-        if tr.get("score") is not None:
-            line = f"training_readiness: {tr['score']} ({_v(tr.get('level'))})"
-            if tr.get("recoveryTime"):
-                line += f" | recovery_time_hr: {round(tr['recoveryTime'] / 60, 1)}"
-            lines.append(line)
-    except Exception:
-        lines.append("training_readiness: unavailable (device may not support it)")
+    tr = _api("get_training_readiness", today, default=None)
+    tr = (tr[0] if isinstance(tr, list) and tr else tr) or {}
+    if tr.get("score") is not None:
+        line = f"training_readiness: {tr['score']} ({_v(tr.get('level'))})"
+        if tr.get("recoveryTime") is not None:
+            line += f" | recovery_time_hr: {round(tr['recoveryTime'] / 60, 1)}"
+        lines.append(line)
 
-    try:
-        ts = g.get_training_status(today) or {}
-        latest = (ts.get("mostRecentTrainingStatus") or {}).get("latestTrainingStatusData") or {}
-        for dev in latest.values():
-            acute = dev.get("acuteTrainingLoadDTO") or {}
-            lines.append(
-                f"training_status: {_v(dev.get('trainingStatusFeedbackPhrase') or dev.get('trainingStatus'))} | "
-                f"acute_load: {_v(acute.get('acuteTrainingLoad') if isinstance(acute, dict) else None)}"
-            )
-            break
-        vo2 = (ts.get("mostRecentVO2Max") or {}).get("generic") or {}
-        if vo2.get("vo2MaxPreciseValue") or vo2.get("vo2MaxValue"):
-            lines.append(f"vo2max: {vo2.get('vo2MaxPreciseValue') or vo2.get('vo2MaxValue')}")
-    except Exception:
-        lines.append("training_status: unavailable")
+    ts = _api("get_training_status", today, default=None) or {}
+    latest = (ts.get("mostRecentTrainingStatus") or {}).get("latestTrainingStatusData") or {}
+    dev = next(iter(latest.values()), None)
+    if dev:
+        acute = dev.get("acuteTrainingLoadDTO") or {}
+        lines.append(
+            f"training_status: {_v(dev.get('trainingStatusFeedbackPhrase') or dev.get('trainingStatus'))} | "
+            f"acute_load: {_v(acute.get('acuteTrainingLoad'))}"
+        )
+    vo2 = (ts.get("mostRecentVO2Max") or {}).get("generic") or {}
+    if vo2.get("vo2MaxPreciseValue") or vo2.get("vo2MaxValue"):
+        lines.append(f"vo2max: {vo2.get('vo2MaxPreciseValue') or vo2.get('vo2MaxValue')}")
 
-    try:
-        hrv = (g.get_hrv_data(today) or {}).get("hrvSummary") or {}
-        if hrv:
-            lines.append(
-                f"hrv: last_night_avg {_v(hrv.get('lastNightAvg'))}ms | "
-                f"weekly_avg {_v(hrv.get('weeklyAvg'))}ms | status {_v(hrv.get('status'))}"
-            )
-    except Exception:
-        lines.append("hrv: unavailable")
+    hrv = (_api("get_hrv_data", today, default=None) or {}).get("hrvSummary") or {}
+    if hrv:
+        lines.append(
+            f"hrv: last_night_avg {_v(hrv.get('lastNightAvg'))}ms | "
+            f"weekly_avg {_v(hrv.get('weeklyAvg'))}ms | status {_v(hrv.get('status'))}"
+        )
 
-    try:
-        rp = g.get_race_predictions() or {}
-        if isinstance(rp, list):
-            rp = rp[0] if rp else {}
-        preds = [
-            (label, rp.get(key))
-            for label, key in [
-                ("5K", "time5K"),
-                ("10K", "time10K"),
-                ("half", "timeHalfMarathon"),
-                ("marathon", "timeMarathon"),
-            ]
-            if rp.get(key)
+    rp = _api("get_race_predictions", default=None) or {}
+    if isinstance(rp, list):
+        rp = rp[0] if rp else {}
+    preds = [
+        (label, rp.get(key))
+        for label, key in [
+            ("5K", "time5K"),
+            ("10K", "time10K"),
+            ("half", "timeHalfMarathon"),
+            ("marathon", "timeMarathon"),
         ]
-        if preds:
-            lines.append("race_predictions: " + " | ".join(f"{lbl} {_hms(t)}" for lbl, t in preds))
-    except Exception:
-        pass
+        if rp.get(key)
+    ]
+    if preds:
+        lines.append("race_predictions: " + " | ".join(f"{lbl} {_hms(t)}" for lbl, t in preds))
 
     if len(lines) == 1:
         return (
@@ -413,11 +436,7 @@ def garmin_get_body_composition(
     body_water_pct, bmi. Only days with a measurement appear.
     """
     start, end = _parse_range(start_date, end_date, default_days=30, max_days=90)
-    g = _client()
-    try:
-        data = g.get_body_composition(start.isoformat(), end.isoformat()) or {}
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch body composition: {type(e).__name__}: {e}. {LOGIN_HINT}") from e
+    data = _api("get_body_composition", start.isoformat(), end.isoformat()) or {}
     entries = data.get("dateWeightList") or []
     if not entries:
         return f"No body composition entries between {start} and {end}."
