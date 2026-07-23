@@ -77,16 +77,47 @@ your Garmin login expired, redo this step.
 
 ## Step 5 — Connect Claude Desktop
 
-1. First, find the folder's full path. In the same terminal, paste:
-   - Mac: `pwd`   — Windows: `(Get-Location).Path`
-   - It prints something like `/Users/alex/Documents/garmin-connect-mcp-server`.
-     Keep this handy.
-2. Open **Claude Desktop** → **Settings** → **Developer** → **Edit Config**. This
+First, find the folder's full path. In the same terminal, paste:
+
+- Mac: `pwd`   — Windows: `(Get-Location).Path`
+
+It prints something like `/Users/alex/Documents/garmin-connect-mcp-server`. Copy it —
+you'll need it for either option below.
+
+### Option A (easiest): ask Claude to do it
+
+Open Claude — ideally **Claude Code** (in the Claude Desktop app or by typing `claude`
+in this same terminal, if you have it) or Claude Desktop with file access turned on —
+and paste this, putting your folder path on the last line:
+
+```text
+Please connect a local MCP server to my Claude Desktop:
+
+1. Open my claude_desktop_config.json
+   (macOS: ~/Library/Application Support/Claude/claude_desktop_config.json,
+   Windows: %APPDATA%\Claude\claude_desktop_config.json).
+   Create it if it doesn't exist.
+2. Under "mcpServers", add an entry named "garmin" with:
+   - "command": the absolute path to .venv/bin/python inside my project folder
+     (on Windows: .venv\Scripts\python.exe)
+   - "args": a list containing the absolute path to server.py in that folder
+   Keep any existing servers in the file, and make sure the JSON stays valid.
+3. If you can't edit files directly, show me exactly what the finished file
+   should contain and tell me where to paste it.
+
+My project folder is at: [PASTE YOUR FOLDER PATH HERE]
+```
+
+When Claude says it's done, go straight to **"Finish: restart Claude Desktop"** below.
+
+### Option B (manual): edit the config file yourself
+
+1. Open **Claude Desktop** → **Settings** → **Developer** → **Edit Config**. This
    opens a file called `claude_desktop_config.json` in a text editor.
-3. Replace its contents with the block below — **but swap both
-   `/YOUR/PATH/HERE` parts for the path from step 1**. (If the file already has other
-   servers listed inside `"mcpServers"`, just add the `"garmin"` part alongside them
-   with a comma between entries.)
+2. Replace its contents with the block below — **but swap both
+   `/YOUR/PATH/HERE` parts for the path you copied above**. (If the file already has
+   other servers listed inside `"mcpServers"`, just add the `"garmin"` part alongside
+   them with a comma between entries.)
 
    Mac:
 
@@ -114,8 +145,12 @@ your Garmin login expired, redo this step.
    }
    ```
 
-4. Save the file, then **fully quit Claude Desktop** (Mac: `Cmd+Q`; Windows: right-click
-   the tray icon → Quit) and open it again.
+3. Save the file.
+
+### Finish: restart Claude Desktop
+
+**Fully quit Claude Desktop** (Mac: `Cmd+Q`; Windows: right-click the tray icon →
+Quit) and open it again — it only reads the config when it starts.
 
 ## Step 6 — Try it
 

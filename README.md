@@ -83,6 +83,10 @@ This opens the MCP Inspector in your browser to exercise each tool by hand.
 
 ## Install in Claude Desktop
 
+> Prefer not to hand-edit JSON? The [QUICKSTART](QUICKSTART.md) has a copy-paste
+> prompt that asks Claude (Claude Code, or Claude Desktop with file access) to write
+> this config for you.
+
 Edit `claude_desktop_config.json`:
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
