@@ -485,7 +485,7 @@ server = [
 
 [[package]]
 name = "garmin-connect-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -494,8 +494,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=2.0" },
-    { name = "garminconnect", specifier = ">=0.3.6" },
+    { name = "fastmcp", specifier = ">=3.4,<4" },
+    { name = "garminconnect", specifier = ">=0.3.6,<0.4" },
 ]
 
 [[package]]

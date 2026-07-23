@@ -25,16 +25,21 @@ from Finder/Explorer onto the terminal window, and press **Enter**.
 
 ## Step 3 — Install (one time)
 
-Check you have Python by pasting this and pressing Enter:
+Check you have Python by pasting this and pressing Enter — on **Mac**:
 
 ```bash
 python3 --version
 ```
 
-If it prints `Python 3.12` or higher, you're good. If not (or on Windows, if it's not
-found), install Python from [python.org/downloads](https://www.python.org/downloads/)
-first — on Windows, tick **"Add python.exe to PATH"** during install, then close and
-reopen the terminal.
+On **Windows** (the `python3` command doesn't exist there):
+
+```powershell
+py --version
+```
+
+If it prints `Python 3.12` or higher, you're good. If not, install Python from
+[python.org/downloads](https://www.python.org/downloads/) first — on Windows, tick
+**"Add python.exe to PATH"** during install, then close and reopen the terminal.
 
 Now paste this (Mac):
 
@@ -68,12 +73,13 @@ Type your Garmin Connect email, then your password (**the password stays invisib
 while you type — that's normal**), and an MFA code if Garmin emails you one.
 
 When you see **"Logged in as … Tokens saved"**, you're done. Your password is not
-saved anywhere — just a login token, which lasts about a year. If Claude ever says
-your Garmin login expired, redo this step.
+saved anywhere — just a long-lived login token that renews itself as you use it. If
+Claude ever says your Garmin login expired, redo this step.
 
-> **If you see an error mentioning "429" or "rate limited":** Garmin is temporarily
-> blocking login attempts from your internet connection. Wait an hour and try again
-> (or connect to a different network, like your phone's hotspot).
+> **If you see "Garmin is rate limiting login attempts" or "Too many login
+> attempts":** Garmin is temporarily blocking logins from your internet connection.
+> Wait an hour and try again (or connect to a different network, like your phone's
+> hotspot).
 
 ## Step 5 — Connect Claude Desktop
 
@@ -170,9 +176,9 @@ The first time, Claude may ask permission to use the `garmin` tools — allow it
 | Problem | Fix |
 |---|---|
 | Claude doesn't mention Garmin at all | The config file likely has a typo — every `{ } " ,` matters. Redo Step 5 carefully, then fully quit and reopen Claude. |
-| "No valid Garmin Connect tokens found" | Redo Step 4. |
+| "Garmin Connect authentication failed" | Redo Step 4. |
 | Everything shows `-` or "No activities" | Your Garmin account has no synced data for that time period. Sleep/HRV/stress need a Garmin watch. |
-| Login fails with "429" | Wait an hour, or switch to another network, then retry Step 4. |
+| "Too many login attempts" / rate limiting | Wait an hour, or switch to another network, then retry Step 4. |
 
 Nothing here can change or delete anything in your Garmin account — the connection is
 read-only.
