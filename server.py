@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from typing import Annotated, Literal
 
@@ -83,6 +84,24 @@ def _api(method: str, *args, default=_RAISE):
             f"{method} failed: {type(e).__name__}: {e}. This is not an authentication "
             "problem — do not re-run login.py; retry later or narrow the request."
         ) from e
+
+
+_MAX_FETCH_WORKERS = 4
+
+
+def _api_per_day(method: str, dates: list[str]) -> dict[str, object]:
+    """Fetch `method` for many dates concurrently (bounded workers).
+
+    Returns {date: payload-or-None}; None marks a non-auth failure for that day.
+    Auth/rate-limit errors cancel the remaining fetches and propagate.
+    """
+    with ThreadPoolExecutor(max_workers=_MAX_FETCH_WORKERS) as ex:
+        futures = {ds: ex.submit(_api, method, ds, default=None) for ds in dates}
+        try:
+            return {ds: f.result() for ds, f in futures.items()}
+        except RuntimeError:
+            ex.shutdown(cancel_futures=True)
+            raise
 
 
 def _parse_range(
@@ -199,15 +218,16 @@ def garmin_get_daily_summary(
         "date | steps | resting_hr | hrv_avg | hrv_status | bb_high | bb_low | stress_avg | intensity_min | active_kcal",
         "---|---|---|---|---|---|---|---|---|---",
     ]
+    dates = [d.isoformat() for d in _days(start, end)]
+    summaries = _api_per_day("get_user_summary", dates)
+    hrv_by_day = _api_per_day("get_hrv_data", dates)
     failed: list[str] = []
-    for d in _days(start, end):
-        ds = d.isoformat()
-        s = _api("get_user_summary", ds, default=None)
-        hrv_raw = _api("get_hrv_data", ds, default=None)
+    for ds in dates:
+        s = summaries[ds]
         if s is None:
             failed.append(ds)
             s = {}
-        hrv = (hrv_raw or {}).get("hrvSummary") or {}
+        hrv = (hrv_by_day[ds] or {}).get("hrvSummary") or {}
         moderate = s.get("moderateIntensityMinutes")
         vigorous = s.get("vigorousIntensityMinutes")
         # Only compute when Garmin reported at least one component; otherwise a failed
@@ -253,10 +273,11 @@ def garmin_get_sleep(
         "date | score | quality | duration | deep | light | rem | awake | overnight_hrv | spo2_avg | resting_hr",
         "---|---|---|---|---|---|---|---|---|---|---",
     ]
+    dates = [d.isoformat() for d in _days(start, end)]
+    sleep_by_day = _api_per_day("get_sleep_data", dates)
     failed: list[str] = []
-    for d in _days(start, end):
-        ds = d.isoformat()
-        data = _api("get_sleep_data", ds, default=None)
+    for ds in dates:
+        data = sleep_by_day[ds]
         if data is None:
             failed.append(ds)
             data = {}
