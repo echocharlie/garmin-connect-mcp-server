@@ -9,7 +9,6 @@ Switch account: uv run python login.py --force
 """
 
 import getpass
-import os
 import sys
 
 from garminconnect import (
@@ -18,7 +17,7 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 
-TOKEN_DIR = os.path.expanduser(os.environ.get("GARMINTOKENS", "~/.garminconnect"))
+from server import TOKEN_DIR  # single source of truth for where tokens live
 
 RATE_LIMIT_ADVICE = (
     "Garmin is rate limiting login attempts from this IP. Wait 30-60 minutes without "
@@ -50,6 +49,16 @@ def main(force: bool = False) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    if not sys.stdin.isatty():
+        # getpass falls back to echoing the password when stdin isn't a terminal,
+        # which would leak it into captured output (e.g. an agent transcript).
+        print(
+            "login.py needs an interactive terminal to prompt for your password "
+            "securely. Run it yourself in Terminal/PowerShell.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     email = input("Garmin Connect email: ").strip()
     password = getpass.getpass("Garmin Connect password (not stored): ")

@@ -4,6 +4,27 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.2.1] - 2026-07-23
+
+Remaining review items that didn't make the 15-finding report.
+
+### Fixed
+
+- `garmin_list_activities` fetches a single page of `limit+1` results from the same
+  endpoint the library uses, instead of paginating the entire date range 20-at-a-time
+  and discarding everything past `limit`.
+- `login.py` refuses to run without an interactive terminal — `getpass` would
+  otherwise echo the password in cleartext into captured output — and no longer
+  duplicates the token-directory definition (imported from `server.py`).
+- Date-defaulting tools document that "today" is the server's local day, which can
+  differ from the Garmin account's day near midnight.
+
+### Changed
+
+- Cleanup: shared `_km`/`_kg`/`_table` formatting helpers replace repeated inline
+  expressions and hand-counted table separators; `_hms` builds on `_hm`; `_pace`
+  folded into its only caller; dead list-shape guards removed from training status.
+
 ## [0.2.0] - 2026-07-23
 
 Fixes from a max-effort code review (PRs #1-#4).

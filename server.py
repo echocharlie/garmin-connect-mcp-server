@@ -62,7 +62,7 @@ def _drop_client() -> None:
         _garmin = None
 
 
-def _api(method: str, *args, default=_RAISE):
+def _api(method: str, *args, default=_RAISE, **kwargs):
     """Call a Garmin client method with auth-aware error translation.
 
     Auth errors drop the cached client (so a re-run of login.py takes effect without a
@@ -71,7 +71,7 @@ def _api(method: str, *args, default=_RAISE):
     """
     g = _client()
     try:
-        return getattr(g, method)(*args)
+        return getattr(g, method)(*args, **kwargs)
     except GarminConnectAuthenticationError as e:
         _drop_client()
         raise RuntimeError(f"{method} failed: {LOGIN_HINT}") from e
@@ -147,8 +147,22 @@ def _hms(seconds) -> str:
     """Seconds -> 'H:MM:SS' string, or '-' if missing. 0 is a real value (0:00:00)."""
     if seconds is None:
         return "-"
-    seconds = int(seconds)
-    return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+    return f"{_hm(seconds)}:{int(seconds) % 60:02d}"
+
+
+def _km(meters) -> str:
+    """Meters -> kilometers with 2 decimals, or '-' if missing/zero."""
+    return f"{meters / 1000:.2f}" if meters else "-"
+
+
+def _kg(grams) -> str:
+    """Grams -> kilograms with 1 decimal, or '-' if missing/zero."""
+    return f"{grams / 1000:.1f}" if grams else "-"
+
+
+def _table(*cols: str) -> list[str]:
+    """Markdown table header + separator rows derived from one column list."""
+    return [" | ".join(cols), "|".join(["---"] * len(cols))]
 
 
 def _cell(x) -> str:
@@ -178,18 +192,13 @@ def _n(x) -> str:
 
 
 def _pace_or_speed(type_key: str, speed_mps) -> str:
-    """Pace for running types, km/h otherwise."""
-    if "running" in (type_key or ""):
-        return _pace(speed_mps)
-    return f"{speed_mps * 3.6:.1f}km/h" if speed_mps else "-"
-
-
-def _pace(speed_mps) -> str:
-    """m/s -> 'M:SS/km' pace string."""
+    """Pace (M:SS/km) for running types, km/h otherwise; '-' if missing."""
     if not speed_mps:
         return "-"
-    sec_per_km = 1000 / speed_mps
-    return f"{int(sec_per_km // 60)}:{int(sec_per_km % 60):02d}/km"
+    if "running" in (type_key or ""):
+        sec_per_km = 1000 / speed_mps
+        return f"{int(sec_per_km // 60)}:{int(sec_per_km % 60):02d}/km"
+    return f"{speed_mps * 3.6:.1f}km/h"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +212,8 @@ def garmin_get_daily_summary(
         str | None, Field(description="ISO start date (inclusive), e.g. '2026-07-01'. Default: 6 days before end_date.")
     ] = None,
     end_date: Annotated[
-        str | None, Field(description="ISO end date (inclusive). Default: today.")
+        str | None,
+        Field(description="ISO end date (inclusive). Default: today in the SERVER's local timezone — near midnight this can differ from the Garmin account's calendar day; pass explicit dates if it matters."),
     ] = None,
 ) -> str:
     """Day-by-day Garmin health metrics as a compact table (max 31 days, default last 7).
@@ -214,10 +224,8 @@ def garmin_get_daily_summary(
     For sleep detail use garmin_get_sleep; for workouts use garmin_list_activities.
     """
     start, end = _parse_range(start_date, end_date, default_days=7, max_days=31)
-    rows = [
-        "date | steps | resting_hr | hrv_avg | hrv_status | bb_high | bb_low | stress_avg | intensity_min | active_kcal",
-        "---|---|---|---|---|---|---|---|---|---",
-    ]
+    rows = _table("date", "steps", "resting_hr", "hrv_avg", "hrv_status", "bb_high", "bb_low",
+                  "stress_avg", "intensity_min", "active_kcal")
     dates = [d.isoformat() for d in _days(start, end)]
     summaries = _api_per_day("get_user_summary", dates)
     hrv_by_day = _api_per_day("get_hrv_data", dates)
@@ -269,10 +277,8 @@ def garmin_get_sleep(
     may differ slightly; say which source you're citing.
     """
     start, end = _parse_range(start_date, end_date, default_days=7, max_days=31)
-    rows = [
-        "date | score | quality | duration | deep | light | rem | awake | overnight_hrv | spo2_avg | resting_hr",
-        "---|---|---|---|---|---|---|---|---|---|---",
-    ]
+    rows = _table("date", "score", "quality", "duration", "deep", "light", "rem", "awake",
+                  "overnight_hrv", "spo2_avg", "resting_hr")
     dates = [d.isoformat() for d in _days(start, end)]
     sleep_by_day = _api_per_day("get_sleep_data", dates)
     failed: list[str] = []
@@ -334,28 +340,38 @@ def garmin_list_activities(
     effect 0-5), anaerobic_te.
     """
     start, end = _parse_range(start_date, end_date, default_days=30, max_days=90)
-    acts = _api("get_activities_by_date", start.isoformat(), end.isoformat(), activity_type) or []
+    # Single-page fetch of limit+1 (to detect truncation) instead of the library's
+    # get_activities_by_date, which paginates the ENTIRE range 20 at a time and would
+    # make us throw away everything past `limit`. Same endpoint and params the library
+    # uses internally.
+    params = {
+        "startDate": start.isoformat(),
+        "endDate": end.isoformat(),
+        "start": "0",
+        "limit": str(limit + 1),
+    }
+    if activity_type:
+        params["activityType"] = activity_type
+    url = getattr(_client(), "garmin_connect_activities", "/activitylist-service/activities/search/activities")
+    acts = _api("connectapi", url, params=params) or []
     if not acts:
         return f"No activities between {start} and {end}" + (f" of type '{activity_type}'." if activity_type else ".")
-    total = len(acts)
+    truncated = len(acts) > limit
     acts = acts[:limit]
-    rows = [
-        "activity_id | date | type | name | distance_km | duration | avg_hr | max_hr | pace_or_speed | elev_gain_m | aerobic_te | anaerobic_te",
-        "---|---|---|---|---|---|---|---|---|---|---|---",
-    ]
+    rows = _table("activity_id", "date", "type", "name", "distance_km", "duration", "avg_hr",
+                  "max_hr", "pace_or_speed", "elev_gain_m", "aerobic_te", "anaerobic_te")
     for a in acts:
-        dist = a.get("distance")
         type_key = (a.get("activityType") or {}).get("typeKey", "-")
         pace = _pace_or_speed(type_key, a.get("averageSpeed"))
         rows.append(
             f"{a.get('activityId', '-')} | {str(a.get('startTimeLocal', '-'))[:10]} | {type_key} | "
-            f"{_cell(a.get('activityName'))} | {f'{dist / 1000:.2f}' if dist else '-'} | "
+            f"{_cell(a.get('activityName'))} | {_km(a.get('distance'))} | "
             f"{_hm(a.get('duration'))} | {_n(a.get('averageHR'))} | {_n(a.get('maxHR'))} | {pace} | "
             f"{_v(a.get('elevationGain'), '{:.0f}')} | {_v(a.get('aerobicTrainingEffect'), '{:.1f}')} | "
             f"{_v(a.get('anaerobicTrainingEffect'), '{:.1f}')}"
         )
-    if total > limit:
-        rows.append(f"\nShowing {limit} of {total}; narrow the date range or raise limit to see more.")
+    if truncated:
+        rows.append(f"\nShowing the newest {limit}; more exist in this range — narrow it or raise limit.")
     return "\n".join(rows)
 
 
@@ -378,11 +394,10 @@ def garmin_get_activity_detail(
         )
     s = a.get("summaryDTO") or {}
     type_key = ((a.get("activityTypeDTO") or {}).get("typeKey")) or "-"
-    dist = s.get("distance")
     lines = [
         f"# {_cell(a.get('activityName') or 'Activity')} ({type_key}) — id {activity_id}",
         f"start: {s.get('startTimeLocal', '-')}",
-        f"distance_km: {f'{dist / 1000:.2f}' if dist else '-'} | duration: {_hms(s.get('duration'))} | moving: {_hms(s.get('movingDuration'))}",
+        f"distance_km: {_km(s.get('distance'))} | duration: {_hms(s.get('duration'))} | moving: {_hms(s.get('movingDuration'))}",
         f"avg_hr: {_n(s.get('averageHR'))} | max_hr: {_n(s.get('maxHR'))} | calories: {_n(s.get('calories'))}",
         f"pace_or_speed: {_pace_or_speed(type_key, s.get('averageSpeed'))}",
         f"elev_gain_m: {_v(s.get('elevationGain'), '{:.0f}')} | elev_loss_m: {_v(s.get('elevationLoss'), '{:.0f}')}",
@@ -394,16 +409,16 @@ def garmin_get_activity_detail(
     if response_format == "detailed":
         zones = _api("get_activity_hr_in_timezones", activity_id, default=[]) or []
         if any(z.get("secsInZone") for z in zones):
-            lines += ["", "## Time in HR zones", "zone | time | low_bpm", "---|---|---"]
+            lines += ["", "## Time in HR zones", *_table("zone", "time", "low_bpm")]
             for z in zones:
                 lines.append(f"Z{z.get('zoneNumber', '?')} | {_hm(z.get('secsInZone'))} | {_v(z.get('zoneLowBoundary'))}")
         splits = (_api("get_activity_splits", activity_id, default={}) or {}).get("lapDTOs") or []
         if splits:
-            lines += ["", "## Splits (laps)", "lap | distance_km | duration | avg_hr | pace_or_speed | elev_gain_m", "---|---|---|---|---|---"]
+            lines += ["", "## Splits (laps)",
+                      *_table("lap", "distance_km", "duration", "avg_hr", "pace_or_speed", "elev_gain_m")]
             for i, lap in enumerate(splits, 1):
-                ld = lap.get("distance")
                 lines.append(
-                    f"{i} | {f'{ld / 1000:.2f}' if ld else '-'} | {_hms(lap.get('duration'))} | "
+                    f"{i} | {_km(lap.get('distance'))} | {_hms(lap.get('duration'))} | "
                     f"{_n(lap.get('averageHR'))} | {_pace_or_speed(type_key, lap.get('averageSpeed'))} | "
                     f"{_v(lap.get('elevationGain'), '{:.0f}')}"
                 )
@@ -420,8 +435,8 @@ def garmin_get_training_status() -> str:
     today = date.today().isoformat()
     lines = [f"# Garmin training snapshot — {today}"]
 
-    tr = _api("get_training_readiness", today, default=None)
-    tr = (tr[0] if isinstance(tr, list) and tr else tr) or {}
+    tr = _api("get_training_readiness", today, default=None)  # library returns list[dict]
+    tr = tr[0] if tr else {}
     if tr.get("score") is not None:
         line = f"training_readiness: {tr['score']} ({_v(tr.get('level'))})"
         if tr.get("recoveryTime") is not None:
@@ -448,9 +463,7 @@ def garmin_get_training_status() -> str:
             f"weekly_avg {_v(hrv.get('weeklyAvg'))}ms | status {_v(hrv.get('status'))}"
         )
 
-    rp = _api("get_race_predictions", default=None) or {}
-    if isinstance(rp, list):
-        rp = rp[0] if rp else {}
+    rp = _api("get_race_predictions", default=None) or {}  # no-arg form returns one dict
     preds = [
         (label, rp.get(key))
         for label, key in [
@@ -492,13 +505,8 @@ def garmin_get_body_composition(
     entries = data.get("dateWeightList") or []
     if not entries:
         return f"No body composition entries between {start} and {end}."
-    rows = [
-        "date | weight_kg | body_fat_pct | muscle_mass_kg | body_water_pct | bmi",
-        "---|---|---|---|---|---",
-    ]
+    rows = _table("date", "weight_kg", "body_fat_pct", "muscle_mass_kg", "body_water_pct", "bmi")
     for e in entries:
-        weight = e.get("weight")
-        muscle = e.get("muscleMass")
         when = e.get("calendarDate")
         if not when:
             # Fallback 'date' field is epoch milliseconds, not a date string.
@@ -506,8 +514,8 @@ def garmin_get_body_composition(
             when = date.fromtimestamp(ts / 1000).isoformat() if isinstance(ts, (int, float)) else "-"
         rows.append(
             f"{when} | "
-            f"{f'{weight / 1000:.1f}' if weight else '-'} | {_v(e.get('bodyFat'), '{:.1f}')} | "
-            f"{f'{muscle / 1000:.1f}' if muscle else '-'} | {_v(e.get('bodyWater'), '{:.1f}')} | "
+            f"{_kg(e.get('weight'))} | {_v(e.get('bodyFat'), '{:.1f}')} | "
+            f"{_kg(e.get('muscleMass'))} | {_v(e.get('bodyWater'), '{:.1f}')} | "
             f"{_v(e.get('bmi'), '{:.1f}')}"
         )
     return "\n".join(rows)
