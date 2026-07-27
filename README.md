@@ -4,7 +4,9 @@ A read-only [Model Context Protocol](https://modelcontextprotocol.io) (MCP) serv
 gives Claude Desktop access to your Garmin Connect data — daily health metrics, sleep,
 activities, training status, and body composition.
 
-> **Non-technical?** Follow the step-by-step [QUICKSTART](QUICKSTART.md) instead.
+> **Non-technical?** Follow the step-by-step [QUICKSTART](QUICKSTART.md) — or, if you
+> use Claude Cowork/Claude Code, paste the one-shot prompt in
+> [SETUP-PROMPT.md](SETUP-PROMPT.md) and let Claude do the setup for you.
 
 ## Why this exists
 

@@ -1,5 +1,10 @@
 # Quickstart (no coding experience needed)
 
+> **Fastest path:** if you use Claude Cowork or Claude Code, you can skip this whole
+> guide — paste the one-shot prompt from [SETUP-PROMPT.md](SETUP-PROMPT.md) and let
+> Claude do every step below for you (you'll still type your Garmin password
+> yourself in Step 4).
+
 This guide gets Claude Desktop talking to your Garmin data in about 10 minutes.
 You'll copy and paste a few commands into Terminal — that's it.
 

@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mcp-inspector",
+      "url": "http://localhost:6274",
+      "port": 6274
+    }
+  ]
+}
